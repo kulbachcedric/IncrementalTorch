@@ -220,3 +220,25 @@ class RollingRegressor(RollingDeepEstimator, Regressor):
             res = self.module(x_t).detach().tolist()
 
         return res
+
+    def forecast(self, horizon: int) -> pd.Series:
+        """
+        Forecast the target value for the next `horizon` examples.
+
+        Parameters
+        ----------
+        horizon
+            Number of examples to forecast.
+
+        Returns
+        -------
+        pd.Series
+            Forecasted target values.
+        """
+        res = []
+        for _ in range(horizon):
+            x_t = deque2rolling_tensor(self._x_window, device=self.device)
+            y_pred = self.module(x_t).detach().numpy().item()
+            res.append(y_pred)
+            self._x_window.append([y_pred])
+        return pd.Series(res)
