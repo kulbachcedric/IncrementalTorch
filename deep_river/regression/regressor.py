@@ -10,10 +10,10 @@ from deep_river.utils.tensor_conversion import df2tensor, dict2tensor, float2ten
 
 
 class _TestModule(torch.nn.Module):
-    def __init__(self, n_features):
+    def __init__(self):
         super().__init__()
 
-        self.dense0 = torch.nn.Linear(n_features, 10)
+        self.dense0 = torch.nn.Linear(2, 10)
         self.nonlin = torch.nn.ReLU()
         self.dropout = torch.nn.Dropout(0.5)
         self.dense1 = torch.nn.Linear(10, 5)
@@ -45,7 +45,7 @@ class Regressor(DeepEstimator, base.MiniBatchRegressor):
         Can be a loss function provided by `torch.nn.functional` or one of
         the following: 'mse', 'l1', 'cross_entropy', 'binary_crossentropy',
         'smooth_l1', 'kl_div'.
-    optimizer_fn
+    optimizer
         Optimizer to be used for training the wrapped model.
         Can be an optimizer class provided by `torch.optim` or one of the
         following: "adam", "adam_w", "sgd", "rmsprop", "lbfgs".
@@ -65,9 +65,9 @@ class Regressor(DeepEstimator, base.MiniBatchRegressor):
 
     def __init__(
         self,
-        module: Type[torch.nn.Module],
+        module: torch.nn.Module,
         loss_fn: Union[str, Callable] = "mse",
-        optimizer_fn: Union[str, Callable] = "sgd",
+        optimizer: Union[str, Callable] = "sgd",
         lr: float = 1e-3,
         is_feature_incremental: bool = False,
         device: str = "cpu",
@@ -78,7 +78,7 @@ class Regressor(DeepEstimator, base.MiniBatchRegressor):
             module=module,
             loss_fn=loss_fn,
             device=device,
-            optimizer_fn=optimizer_fn,
+            optimizer=optimizer,
             lr=lr,
             is_feature_incremental=is_feature_incremental,
             seed=seed,
@@ -99,7 +99,7 @@ class Regressor(DeepEstimator, base.MiniBatchRegressor):
         """
 
         yield {
-            "module": _TestModule,
+            "module": _TestModule(),
             "loss_fn": "l1",
             "optimizer_fn": "sgd",
             "is_feature_incremental": True,
@@ -135,9 +135,7 @@ class Regressor(DeepEstimator, base.MiniBatchRegressor):
         Regressor
             The regressor itself.
         """
-        if not self.module_initialized:
-            self._update_observed_features(x)
-            self.initialize_module(x=x, **self.kwargs)
+        self._update_observed_features(x)
         self._adapt_input_dim(x)
         x_t = dict2tensor(x, features=self.observed_features, device=self.device)
         y_t = float2tensor(y, device=self.device)
@@ -149,7 +147,7 @@ class Regressor(DeepEstimator, base.MiniBatchRegressor):
         self.module.train()
         self.optimizer.zero_grad()
         y_pred = self.module(x)
-        loss = self.loss_func(y_pred, y)
+        loss = self.loss_fn(y_pred, y)
         loss.backward()
         self.optimizer.step()
 
@@ -167,9 +165,7 @@ class Regressor(DeepEstimator, base.MiniBatchRegressor):
         RegTarget
             Predicted target value.
         """
-        if not self.module_initialized:
-            self._update_observed_features(x)
-            self.initialize_module(x=x, **self.kwargs)
+        self._update_observed_features(x)
         self._adapt_input_dim(x)
         x_t = dict2tensor(x, features=self.observed_features, device=self.device)
 
@@ -194,11 +190,8 @@ class Regressor(DeepEstimator, base.MiniBatchRegressor):
         Regressor
             The regressor itself.
         """
-        if not self.module_initialized:
 
-            self._update_observed_features(X)
-            self.initialize_module(x=X, **self.kwargs)
-
+        self._update_observed_features(X)
         self._adapt_input_dim(X)
         X_t = df2tensor(X, features=self.observed_features, device=self.device)
         y_t = torch.tensor(y, device=self.device, dtype=torch.float32).unsqueeze(1)
@@ -220,10 +213,7 @@ class Regressor(DeepEstimator, base.MiniBatchRegressor):
         List
             Predicted target values.
         """
-        if not self.module_initialized:
-            self._update_observed_features(X)
-            self.initialize_module(x=X, **self.kwargs)
-
+        self._update_observed_features(X)
         self._adapt_input_dim(X)
         X_t = df2tensor(X, features=self.observed_features, device=self.device)
 

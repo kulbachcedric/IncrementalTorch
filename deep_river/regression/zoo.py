@@ -12,9 +12,9 @@ class LinearRegression(Regressor):
     """
 
     class LRModule(nn.Module):
-        def __init__(self, n_features):
+        def __init__(self):
             super().__init__()
-            self.dense0 = nn.Linear(n_features, 1)
+            self.dense0 = nn.Linear(2, 1)
 
         def forward(self, x, **kwargs):
             x = self.dense0(x)
@@ -23,7 +23,7 @@ class LinearRegression(Regressor):
     def __init__(
         self,
         loss_fn: Union[str, Callable] = "mse",
-        optimizer_fn: Union[str, Callable] = "sgd",
+        optimizer: Union[str, Callable] = "sgd",
         lr: float = 1e-3,
         device: str = "cpu",
         seed: int = 42,
@@ -33,9 +33,9 @@ class LinearRegression(Regressor):
         if "module" in kwargs:
             del kwargs["module"]
         super().__init__(
-            module=LinearRegression.LRModule,
+            module=LinearRegression.LRModule(),
             loss_fn=loss_fn,
-            optimizer_fn=optimizer_fn,
+            optimizer=optimizer,
             lr=lr,
             device=device,
             seed=seed,
@@ -80,7 +80,7 @@ class MultiLayerPerceptron(Regressor):
             following: 'mse', 'l1', 'cross_entropy',
             'binary_cross_entropy_with_logits', 'binary_crossentropy',
             'smooth_l1', 'kl_div'.
-    optimizer_fn
+    optimizer
         Optimizer to be used for training the wrapped model.
         Can be an optimizer class provided by `torch.optim` or one of the
         following: "adam", "adam_w", "sgd", "rmsprop", "lbfgs".
@@ -104,9 +104,9 @@ class MultiLayerPerceptron(Regressor):
     """
 
     class MLPModule(nn.Module):
-        def __init__(self, n_width, n_layers, n_features):
+        def __init__(self, n_width, n_layers):
             super().__init__()
-            hidden = [nn.Linear(n_features, n_width)]
+            hidden = [nn.Linear(2, n_width)]
             hidden += [nn.Linear(n_width, n_width) for _ in range(n_layers - 1)]
             self.hidden = nn.ModuleList(hidden)
             self.denselast = nn.Linear(n_width, 1)
@@ -122,7 +122,7 @@ class MultiLayerPerceptron(Regressor):
         n_width: int = 5,
         n_layers: int = 5,
         loss_fn: Union[str, Callable] = "mse",
-        optimizer_fn: Union[str, Callable] = "sgd",
+        optimizer: Union[str, Callable] = "sgd",
         lr: float = 1e-3,
         is_feature_incremental: bool = True,
         device: str = "cpu",
@@ -134,14 +134,12 @@ class MultiLayerPerceptron(Regressor):
         if "module" in kwargs:
             del kwargs["module"]
         super().__init__(
-            module=MultiLayerPerceptron.MLPModule,
+            module=MultiLayerPerceptron.MLPModule(n_width, n_layers),
             loss_fn=loss_fn,
-            optimizer_fn=optimizer_fn,
+            optimizer=optimizer,
             lr=lr,
             device=device,
             seed=seed,
-            n_width=n_width,
-            n_layers=n_layers,
             is_feature_incremental=is_feature_incremental,
             **kwargs,
         )
@@ -163,5 +161,5 @@ class MultiLayerPerceptron(Regressor):
             "loss_fn": "mse",
             "optimizer_fn": "sgd",
             "is_feature_incremental": True,
-            "n_layers": 1,
+            "n_layers": 8,
         }

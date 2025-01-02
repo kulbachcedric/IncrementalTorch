@@ -1,4 +1,4 @@
-from typing import Callable, Dict, Type, Union
+from typing import Callable, Dict, Union
 
 import numpy as np
 import pandas as pd
@@ -18,9 +18,9 @@ from deep_river.utils.tensor_conversion import (
 
 
 class _TestModule(torch.nn.Module):
-    def __init__(self, n_features):
+    def __init__(self):
         super().__init__()
-        self.dense0 = torch.nn.Linear(n_features, 5)
+        self.dense0 = torch.nn.Linear(2, 5)
         self.nonlinear = torch.nn.ReLU()
         self.dense1 = torch.nn.Linear(5, 1)
 
@@ -40,17 +40,14 @@ class Classifier(DeepEstimator, base.MiniBatchClassifier):
     Parameters
     ----------
     module
-        Torch Module that builds the autoencoder to be wrapped.
-        The Module should accept parameter `n_features` so that the
-        returned model's input shape can be determined based on the number
-        of features in the initial training example.
+        An initialized PyTorch model to be wrapped.
     loss_fn
         Loss function to be used for training the wrapped model. Can be a
         loss function provided by `torch.nn.functional` or one of the
         following: 'mse', 'l1', 'cross_entropy',
         'binary_cross_entropy_with_logits', 'binary_crossentropy',
         'smooth_l1', 'kl_div'.
-    optimizer_fn
+    optimizer
         Optimizer to be used for training the wrapped model.
         Can be an optimizer class provided by `torch.optim` or one of the
         following: "adam", "adam_w", "sgd", "rmsprop", "lbfgs".
@@ -72,26 +69,22 @@ class Classifier(DeepEstimator, base.MiniBatchClassifier):
         previously features by adding units to the input
         layer of the network.
     device
-        to run the wrapped model on. Can be "cpu" or "cuda".
+        Device to run the wrapped model on. Can be "cpu" or "cuda".
     seed
         Random seed to be used for training the wrapped model.
-    **kwargs
-        Parameters to be passed to the `build_fn` function aside from
-        `n_features`.
 
     Examples
     --------
     >>> from river import metrics, preprocessing, compose, datasets
     >>> from deep_river import classification
-    >>> from torch import nn
-    >>> from torch import manual_seed
+    >>> from torch import nn, manual_seed
 
-    >>> _ = manual_seed(42)
+    >>> manual_seed(42)
 
     >>> class MyModule(nn.Module):
     ...     def __init__(self, n_features):
     ...         super(MyModule, self).__init__()
-    ...         self.dense0 = nn.Linear(n_features,5)
+    ...         self.dense0 = nn.Linear(n_features, 5)
     ...         self.nlin = nn.ReLU()
     ...         self.dense1 = nn.Linear(5, 2)
     ...         self.softmax = nn.Softmax(dim=-1)
@@ -102,31 +95,32 @@ class Classifier(DeepEstimator, base.MiniBatchClassifier):
     ...         x = self.softmax(x)
     ...         return x
 
-    >>> model_pipeline = compose.Pipeline(
-    ...     preprocessing.StandardScaler,
-    ...     Classifier(module=MyModule,
-    ...                loss_fn="binary_cross_entropy",
-    ...                optimizer_fn='adam')
+    >>> model = MyModule(n_features=2)
+    >>> classifier = Classifier(
+    ...     module=model,
+    ...     loss_fn="binary_cross_entropy",
+    ...     optimizer="adam",
+    ...     is_class_incremental=True,
+    ...     is_feature_incremental=True,
     ... )
-
 
     >>> dataset = datasets.Phishing()
     >>> metric = metrics.Accuracy()
 
     >>> for x, y in dataset:
-    ...     y_pred = model_pipeline.predict_one(x)  # make a prediction
-    ...     metric.update(y, y_pred)  # update the metric
-    ...     model_pipeline.learn_one(x,y)
+    ...     y_pred = classifier.predict_one(x)
+    ...     metric.update(y, y_pred)
+    ...     classifier.learn_one(x, y)
 
-    >>> print(f'Accuracy: {metric.get()}')
+    >>> print(f"Accuracy: {metric.get()}")
     Accuracy: 0.7264
     """
 
     def __init__(
         self,
-        module: Type[torch.nn.Module],
+        module: torch.nn.Module,
         loss_fn: Union[str, Callable] = "binary_cross_entropy_with_logits",
-        optimizer_fn: Union[str, Callable] = "sgd",
+        optimizer: Union[str, Callable] = "sgd",
         lr: float = 1e-3,
         output_is_logit: bool = True,
         is_class_incremental: bool = False,
@@ -135,10 +129,15 @@ class Classifier(DeepEstimator, base.MiniBatchClassifier):
         seed: int = 42,
         **kwargs,
     ):
+        if not isinstance(module, torch.nn.Module):
+            raise ValueError(
+                "The 'module' parameter must be an initialized PyTorch model."
+            )
+
         super().__init__(
             module=module,
             loss_fn=loss_fn,
-            optimizer_fn=optimizer_fn,
+            optimizer=optimizer,
             device=device,
             lr=lr,
             is_feature_incremental=is_feature_incremental,
@@ -151,19 +150,8 @@ class Classifier(DeepEstimator, base.MiniBatchClassifier):
 
     @classmethod
     def _unit_test_params(cls):
-        """
-        Returns a dictionary of parameters to be used for unit testing the
-        respective class.
-
-        Yields
-        -------
-        dict
-            Dictionary of parameters to be used for unit testing the
-            respective class.
-        """
-
         yield {
-            "module": _TestModule,
+            "module": _TestModule(),
             "loss_fn": "binary_cross_entropy_with_logits",
             "optimizer_fn": "sgd",
             "is_feature_incremental": True,
@@ -195,7 +183,7 @@ class Classifier(DeepEstimator, base.MiniBatchClassifier):
             n_classes=n_classes,
             device=self.device,
         )
-        loss = self.loss_func(y_pred, y_onehot)
+        loss = self.loss_fn(y_pred, y_onehot)
         loss.backward()
         self.optimizer.step()
         return self
@@ -217,11 +205,8 @@ class Classifier(DeepEstimator, base.MiniBatchClassifier):
             The classifier itself.
         """
 
-        # check if model is initialized
-        if not self.module_initialized:
-            self._update_observed_features(x)
-            self._update_observed_classes(y)
-            self.initialize_module(x=x, **self.kwargs)
+        self._update_observed_features(x)
+        self._update_observed_classes(y)
 
         # check last layer
         self._adapt_input_dim(x)
@@ -246,10 +231,7 @@ class Classifier(DeepEstimator, base.MiniBatchClassifier):
             Dictionary of probabilities for each label.
         """
 
-        if not self.module_initialized:
-            self._update_observed_features(x)
-            self.initialize_module(x=x, **self.kwargs)
-
+        self._update_observed_features(x)
         self._adapt_input_dim(x)
 
         x_t = dict2tensor(x, features=self.observed_features, device=self.device)
@@ -304,10 +286,8 @@ class Classifier(DeepEstimator, base.MiniBatchClassifier):
         """
         # check if model is initialized
 
-        if not self.module_initialized:
-            self._update_observed_features(X)
-            self._update_observed_classes(y)
-            self.initialize_module(x=X, **self.kwargs)
+        self._update_observed_features(X)
+        self._update_observed_classes(y)
 
         self._adapt_input_dim(X)
         self._adapt_output_dim(y)
@@ -330,9 +310,7 @@ class Classifier(DeepEstimator, base.MiniBatchClassifier):
         pd.DataFrame
             of probabilities for each label.
         """
-        if not self.module_initialized:
-            self._update_observed_features(x)
-            self.initialize_module(x=x, **self.kwargs)
+        self._update_observed_features(x)
 
         self._adapt_input_dim(x)
         x_t = df2tensor(x, features=self.observed_features, device=self.device)

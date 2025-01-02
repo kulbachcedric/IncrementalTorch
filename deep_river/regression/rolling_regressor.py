@@ -10,11 +10,11 @@ from deep_river.utils.tensor_conversion import deque2rolling_tensor, float2tenso
 
 
 class _TestLSTM(torch.nn.Module):
-    def __init__(self, n_features):
+    def __init__(self):
         super().__init__()
         self.hidden_size = 1
         self.lstm = torch.nn.LSTM(
-            input_size=n_features, hidden_size=self.hidden_size, num_layers=1
+            input_size=2, hidden_size=self.hidden_size, num_layers=1
         )
 
     def forward(self, X, **kwargs):
@@ -41,7 +41,7 @@ class RollingRegressor(RollingDeepEstimator, Regressor):
         loss function provided by `torch.nn.functional` or one of the
         following: 'mse', 'l1', 'cross_entropy', 'binary_crossentropy',
         'smooth_l1', 'kl_div'.
-    optimizer_fn
+    optimizer
         Optimizer to be used for training the wrapped model. Can be an
         optimizer class provided by `torch.optim` or one of the following:
         "adam", "adam_w", "sgd", "rmsprop", "lbfgs".
@@ -65,9 +65,9 @@ class RollingRegressor(RollingDeepEstimator, Regressor):
 
     def __init__(
         self,
-        module: Type[torch.nn.Module],
+        module: torch.nn.Module,
         loss_fn: Union[str, Callable] = "mse",
-        optimizer_fn: Union[str, Callable] = "sgd",
+        optimizer: Union[str, Callable] = "sgd",
         lr: float = 1e-3,
         is_feature_incremental: bool = False,
         window_size: int = 10,
@@ -80,7 +80,7 @@ class RollingRegressor(RollingDeepEstimator, Regressor):
             module=module,
             loss_fn=loss_fn,
             device=device,
-            optimizer_fn=optimizer_fn,
+            optimizer=optimizer,
             lr=lr,
             is_feature_incremental=is_feature_incremental,
             window_size=window_size,
@@ -103,7 +103,7 @@ class RollingRegressor(RollingDeepEstimator, Regressor):
         """
 
         yield {
-            "module": _TestLSTM,
+            "module": _TestLSTM(),
             "loss_fn": "mse",
             "optimizer_fn": "sgd",
             "lr": 1e-3,
@@ -141,10 +141,7 @@ class RollingRegressor(RollingDeepEstimator, Regressor):
         RollingRegressor
             The regressor itself.
         """
-        if not self.module_initialized:
-            self._update_observed_features(x)
-            self.initialize_module(x=x, **self.kwargs)
-
+        self._update_observed_features(x)
         self._adapt_input_dim(x)
         self._x_window.append([x.get(feature, 0) for feature in self.observed_features])
 
@@ -156,10 +153,7 @@ class RollingRegressor(RollingDeepEstimator, Regressor):
         return self
 
     def learn_many(self, X: pd.DataFrame, y: pd.Series) -> "Regressor":
-        if not self.module_initialized:
-            self._update_observed_features(X)
-            self.initialize_module(x=X, **self.kwargs)
-
+        self._update_observed_features(X)
         self._adapt_input_dim(X)
         self._x_window.extend(X.values.tolist())
         if len(self._x_window) == self.window_size:
@@ -185,11 +179,7 @@ class RollingRegressor(RollingDeepEstimator, Regressor):
             Predicted target value.
         """
         res = 0.0
-        if not self.module_initialized:
-
-            self._update_observed_features(x)
-            self.initialize_module(x=x, **self.kwargs)
-
+        self._update_observed_features(x)
         self._adapt_input_dim(x)
         x_win = self._x_window.copy()
         x_win.append([x.get(feature, 0) for feature in self.observed_features])
@@ -204,10 +194,7 @@ class RollingRegressor(RollingDeepEstimator, Regressor):
         return res
 
     def predict_many(self, X: pd.DataFrame) -> pd.Series:
-        if not self.module_initialized:
-            self._update_observed_features(X)
-            self.initialize_module(x=X, **self.kwargs)
-
+        self._update_observed_features(X)
         self._adapt_input_dim(X)
         X = X[list(self.observed_features)]
         x_win = self._x_window.copy()
@@ -218,5 +205,4 @@ class RollingRegressor(RollingDeepEstimator, Regressor):
         with torch.inference_mode():
             x_t = deque2rolling_tensor(x_win, device=self.device)
             res = self.module(x_t).detach().tolist()
-
         return res

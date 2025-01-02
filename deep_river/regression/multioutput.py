@@ -12,9 +12,9 @@ from deep_river.utils import dict2tensor, float2tensor
 
 
 class _TestModule(torch.nn.Module):
-    def __init__(self, n_features, n_outputs):
+    def __init__(self):
         super().__init__()
-        self.dense0 = torch.nn.Linear(n_features, n_outputs)
+        self.dense0 = torch.nn.Linear(2, 1)
 
     def forward(self, X, **kwargs):
         return self.dense0(X)
@@ -35,7 +35,7 @@ class MultiTargetRegressor(RiverMultiTargetRegressor, DeepEstimator):
         Can be a loss function provided by `torch.nn.functional` or one of
         the following: 'mse', 'l1', 'cross_entropy', 'binary_crossentropy',
         'smooth_l1', 'kl_div'.
-    optimizer_fn
+    optimizer
         Optimizer to be used for training the wrapped model.
         Can be an optimizer class provided by `torch.optim` or one of the
         following: "adam", "adam_w", "sgd", "rmsprop", "lbfgs".
@@ -59,9 +59,9 @@ class MultiTargetRegressor(RiverMultiTargetRegressor, DeepEstimator):
     >>> from deep_river.regression.multioutput import MultiTargetRegressor
 
     >>> class MyModule(nn.Module):
-    ...     def __init__(self, n_features):
+    ...     def __init__(self):
     ...         super(MyModule, self).__init__()
-    ...         self.dense0 = nn.Linear(n_features,3)
+    ...         self.dense0 = nn.Linear(2,3)
     ...
     ...     def forward(self, X, **kwargs):
     ...         X = self.dense0(X)
@@ -75,10 +75,10 @@ class MultiTargetRegressor(RiverMultiTargetRegressor, DeepEstimator):
     >>> model = compose.Pipeline(
     ...     preprocessing.StandardScaler(),
     ...     MultiTargetRegressor(
-    ...         module=MyModule,
+    ...         module=MyModule(),
     ...         loss_fn='mse',
     ...         lr=0.3,
-    ...         optimizer_fn='sgd',
+    ...         optimizer='sgd',
     ...     ))
     >>> metric = metrics.multioutput.MicroAverage(metrics.MAE())
     >>> ev = evaluate.progressive_val_score(dataset, model, metric)
@@ -89,9 +89,9 @@ class MultiTargetRegressor(RiverMultiTargetRegressor, DeepEstimator):
 
     def __init__(
         self,
-        module: Type[torch.nn.Module],
+        module: torch.nn.Module,
         loss_fn: Union[str, Callable] = "mse",
-        optimizer_fn: Union[str, Callable] = "sgd",
+        optimizer: Union[str, Callable] = "sgd",
         lr: float = 1e-3,
         device: str = "cpu",
         seed: int = 42,
@@ -101,7 +101,7 @@ class MultiTargetRegressor(RiverMultiTargetRegressor, DeepEstimator):
             module=module,
             loss_fn=loss_fn,
             device=device,
-            optimizer_fn=optimizer_fn,
+            optimizer=optimizer,
             lr=lr,
             seed=seed,
             **kwargs,
@@ -122,7 +122,7 @@ class MultiTargetRegressor(RiverMultiTargetRegressor, DeepEstimator):
         """
 
         yield {
-            "module": _TestModule,
+            "module": _TestModule(),
             "loss_fn": "l1",
             "optimizer_fn": "sgd",
         }
@@ -153,7 +153,7 @@ class MultiTargetRegressor(RiverMultiTargetRegressor, DeepEstimator):
         self.module.train()
         self.optimizer.zero_grad()
         y_pred = self.module(x)
-        loss = self.loss_func(y_pred, y)
+        loss = self.loss_fn(y_pred, y)
         loss.backward()
         self.optimizer.step()
 

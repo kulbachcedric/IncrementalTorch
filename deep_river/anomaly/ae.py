@@ -13,8 +13,9 @@ from deep_river.utils.tensor_conversion import df2tensor
 
 
 class _TestAutoencoder(torch.nn.Module):
-    def __init__(self, n_features, latent_dim=3):
+    def __init__(self, latent_dim=3):
         super().__init__()
+        n_features = 2
         self.linear1 = nn.Linear(n_features, latent_dim)
         self.nonlin = torch.nn.LeakyReLU()
         self.linear2 = nn.Linear(latent_dim, n_features)
@@ -28,31 +29,26 @@ class _TestAutoencoder(torch.nn.Module):
 
 class Autoencoder(DeepEstimator, AnomalyDetector):
     """
-    Wrapper for PyTorch autoencoder models that uses the networks
+    Wrapper for PyTorch autoencoder models that uses the network's
     reconstruction error for scoring the anomalousness of a given example.
 
     Parameters
     ----------
-    module
-        Torch Module that builds the autoencoder to be wrapped.
-        The Module should accept parameter `n_features` so that the returned
-        model's input shape can be determined based on the number of features
-        in the initial training example.
-    loss_fn
-        Loss function to be used for training the wrapped model. Can be a
-        loss function provided by `torch.nn.functional` or one of the
-        following: 'mse', 'l1', 'cross_entropy', 'binary_crossentropy',
-        'smooth_l1', 'kl_div'.
-    optimizer_fn
-        Optimizer to be used for training the wrapped model. Can be an
-        optimizer class provided by `torch.optim` or one of the following:
-        "adam", "adam_w", "sgd", "rmsprop", "lbfgs".
-    lr
-        Learning rate of the optimizer.
-    device
-        Device to run the wrapped model on. Can be "cpu" or "cuda".
-    seed
-        Random seed to be used for training the wrapped model.
+    module : torch.nn.Module
+        Fully initialized PyTorch autoencoder model.
+    loss_fn : Union[str, Callable]
+        Loss function for training. Can be one of the predefined loss functions
+        ('mse', 'l1', etc.) or a callable.
+    optimizer : Union[str, Callable]
+        Optimizer for training. Can be a predefined optimizer ('adam', 'sgd', etc.) or a callable.
+    lr : float
+        Learning rate for the optimizer.
+    is_feature_incremental : bool
+        Whether to adapt to new input features dynamically.
+    device : str
+        Device to run the model on ('cpu' or 'cuda').
+    seed : int
+        Random seed for reproducibility.
     **kwargs
         Parameters to be passed to the `torch.Module` class
         aside from `n_features`.
@@ -71,8 +67,9 @@ class Autoencoder(DeepEstimator, AnomalyDetector):
     >>> metric = metrics.RollingROCAUC(window_size=5000)
 
     >>> class MyAutoEncoder(torch.nn.Module):
-    ...     def __init__(self, n_features, latent_dim=3):
+    ...     def __init__(self, latent_dim=3):
     ...         super(MyAutoEncoder, self).__init__()
+    ...         n_features = 2
     ...         self.linear1 = nn.Linear(n_features, latent_dim)
     ...         self.nonlin = torch.nn.LeakyReLU()
     ...         self.linear2 = nn.Linear(latent_dim, n_features)
@@ -84,7 +81,7 @@ class Autoencoder(DeepEstimator, AnomalyDetector):
     ...         X = self.linear2(X)
     ...         return self.sigmoid(X)
 
-    >>> ae = Autoencoder(module=MyAutoEncoder, lr=0.005)
+    >>> ae = Autoencoder(module=MyAutoEncoder(), lr=0.005)
     >>> scaler = MinMaxScaler()
     >>> model = Pipeline(scaler, ae)
 
@@ -99,9 +96,9 @@ class Autoencoder(DeepEstimator, AnomalyDetector):
 
     def __init__(
         self,
-        module: Type[torch.nn.Module],
+        module: torch.nn.Module,
         loss_fn: Union[str, Callable] = "mse",
-        optimizer_fn: Union[str, Callable] = "sgd",
+        optimizer: Union[str, Callable] = "sgd",
         lr: float = 1e-3,
         is_feature_incremental: bool = False,
         device: str = "cpu",
@@ -111,7 +108,7 @@ class Autoencoder(DeepEstimator, AnomalyDetector):
         super().__init__(
             module=module,
             loss_fn=loss_fn,
-            optimizer_fn=optimizer_fn,
+            optimizer=optimizer,
             lr=lr,
             is_feature_incremental=is_feature_incremental,
             device=device,
@@ -134,7 +131,7 @@ class Autoencoder(DeepEstimator, AnomalyDetector):
         """
 
         yield {
-            "module": _TestAutoencoder,
+            "module": _TestAutoencoder(),
             "loss_fn": "mse",
             "optimizer_fn": "sgd",
             "is_feature_incremental": True,
@@ -161,7 +158,7 @@ class Autoencoder(DeepEstimator, AnomalyDetector):
 
         Parameters
         ----------
-        x
+        x : dict
             Input example.
 
         **kwargs
@@ -169,11 +166,9 @@ class Autoencoder(DeepEstimator, AnomalyDetector):
         Returns
         -------
         Autoencoder
-            The model itself.
+            The updated model.
         """
-        if not self.module_initialized:
-            self._update_observed_features(x)
-            self.initialize_module(x=x, **self.kwargs)
+        self._update_observed_features(x)
         self._adapt_input_dim(x)
         return self._learn(
             dict2tensor(x, features=self.observed_features, device=self.device)
@@ -182,7 +177,7 @@ class Autoencoder(DeepEstimator, AnomalyDetector):
     def _learn(self, x: torch.Tensor) -> "Autoencoder":
         self.module.train()
         x_pred = self.module(x)
-        loss = self.loss_func(x_pred, x)
+        loss = self.loss_fn(x_pred, x)
         loss.backward()
         self.optimizer.step()
         self.optimizer.zero_grad()
@@ -190,33 +185,26 @@ class Autoencoder(DeepEstimator, AnomalyDetector):
 
     def score_one(self, x: dict) -> float:
         """
-        Returns an anomaly score for the provided example in the form of
-        the autoencoder's reconstruction error.
+        Computes the anomaly score for a single example based on reconstruction error.
 
         Parameters
         ----------
-        x
+        x : dict
             Input example.
 
         Returns
         -------
         float
-            Anomaly score for the given example. Larger values indicate
-            more anomalous examples.
-
+            Anomaly score, where higher values indicate more anomalous examples.
         """
-
-        if not self.module_initialized:
-            self._update_observed_features(x)
-            self.initialize_module(x=x, **self.kwargs)
+        self._update_observed_features(x)
 
         self._adapt_input_dim(x)
-
         x_t = dict2tensor(x, features=self.observed_features, device=self.device)
         self.module.eval()
         with torch.inference_mode():
             x_pred = self.module(x_t)
-        loss = self.loss_func(x_pred, x_t).item()
+        loss = self.loss_fn(x_pred, x_t).item()
         return loss
 
     def learn_many(self, X: pd.DataFrame) -> "Autoencoder":
@@ -225,43 +213,34 @@ class Autoencoder(DeepEstimator, AnomalyDetector):
 
         Parameters
         ----------
-        X
+        X : pd.DataFrame
             Input batch of examples.
 
         Returns
         -------
         Autoencoder
-            The model itself.
-
+            The updated model.
         """
-        if not self.module_initialized:
-
-            self._update_observed_features(X)
-            self.initialize_module(x=X, **self.kwargs)
-
+        self._update_observed_features(X)
         self._adapt_input_dim(X)
         X_t = df2tensor(X, features=self.observed_features, device=self.device)
         return self._learn(X_t)
 
     def score_many(self, X: pd.DataFrame) -> np.ndarray:
         """
-        Returns an anomaly score for the provided batch of examples in
-        the form of the autoencoder's reconstruction error.
+        Computes anomaly scores for a batch of examples.
 
         Parameters
         ----------
-        x
+        X : pd.DataFrame
             Input batch of examples.
 
         Returns
         -------
-        float
-            Anomaly scores for the given batch of examples. Larger values
-            indicate more anomalous examples.
+        np.ndarray
+            Anomaly scores for the batch.
         """
-        if not self.module_initialized:
-            self._update_observed_features(X)
-            self.initialize_module(x=X, **self.kwargs)
+        self._update_observed_features(X)
 
         self._adapt_input_dim(X)
         X_t = df2tensor(X, features=self.observed_features, device=self.device)
@@ -270,13 +249,12 @@ class Autoencoder(DeepEstimator, AnomalyDetector):
         with torch.inference_mode():
             X_pred = self.module(X_t)
         loss = torch.mean(
-            self.loss_func(X_pred, X_t, reduction="none"),
+            self.loss_fn(X_pred, X_t, reduction="none"),
             dim=list(range(1, X_t.dim())),
         )
-        score = loss.cpu().detach().numpy()
-        return score
+        return loss.cpu().detach().numpy()
 
-    def _adapt_input_dim(self, x: Dict | pd.DataFrame):
+    def _adapt_input_dim(self, x: Union[Dict, pd.DataFrame]):
         has_new_feature = self._update_observed_features(x)
 
         if has_new_feature and self.is_feature_incremental:

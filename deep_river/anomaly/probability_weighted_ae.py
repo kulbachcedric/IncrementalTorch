@@ -13,44 +13,31 @@ from deep_river.utils.tensor_conversion import df2tensor
 
 class ProbabilityWeightedAutoencoder(ae.Autoencoder):
     """
-    Wrapper for PyTorch autoencoder models for anomaly detection that
-    reduces the employed learning rate based on an outlier probability
-    estimate of the input example as well as a threshold probability
-    `skip_threshold`. If the outlier probability is above the threshold,
-    the learning rate is reduced to less than 0. Given the probability
-    estimate $p_out$, the adjusted learning rate
-    $lr_adj$ is $lr * 1 - (\frac{p_out}{skip_threshold})$.
+    Wrapper for PyTorch autoencoder models for anomaly detection. Adjusts the learning rate based on the outlier probability estimate
+    of input examples. If the probability exceeds the `skip_threshold`, the learning rate is reduced accordingly.
 
     Parameters
     ----------
-    module
-        Torch Module that builds the autoencoder to be wrapped.
-        The Module should accept parameter `n_features` so that the returned
-        model's input shape can be determined based on the number of features
-        in the initial training example.
-    loss_fn
-        Loss function to be used for training the wrapped model.
-        Can be a loss function provided by `torch.nn.functional` or one of the
-        following: 'mse', 'l1', 'cross_entropy', 'binary_crossentropy',
-        'smooth_l1', 'kl_div'.
-    optimizer_fn
-        Optimizer to be used for training the wrapped model.
-        Can be an optimizer class provided by `torch.optim` or one of the
-        following: "adam", "adam_w", "sgd", "rmsprop", "lbfgs".
-    lr
-        Base learning rate of the optimizer.
-    skip_threshold
-        Threshold probability to use as a reference for the reduction
-        of the base learning rate.
-    device
-        Device to run the wrapped model on. Can be "cpu" or "cuda".
-    seed
-        Random seed to be used for training the wrapped model.
+    module : torch.nn.Module
+        Fully initialized PyTorch autoencoder model.
+    loss_fn : Union[str, Callable]
+        Loss function for training (e.g., 'mse', 'l1') or a callable.
+    optimizer : Union[str, Callable]
+        Optimizer for training (e.g., 'adam', 'sgd') or a callable.
+    lr : float
+        Base learning rate.
+    skip_threshold : float
+        Probability threshold for adjusting the learning rate.
+    device : str
+        Device to run the model on ('cpu' or 'cuda').
+    seed : int
+        Random seed for reproducibility.
+    window_size : int
+        Window size for rolling statistics used in outlier probability estimation.
     **kwargs
-        Parameters to be passed to the `module` function
-        aside from `n_features`.
+        Additional parameters for customization.
 
-        Examples
+    Examples
     --------
     >>> from deep_river.anomaly import ProbabilityWeightedAutoencoder
     >>> from river import metrics
@@ -93,27 +80,27 @@ class ProbabilityWeightedAutoencoder(ae.Autoencoder):
 
     def __init__(
         self,
-        module: Type[torch.nn.Module],
+        module: torch.nn.Module,
         loss_fn: Union[str, Callable] = "mse",
-        optimizer_fn: Union[str, Callable] = "sgd",
+        optimizer: Union[str, Callable] = "sgd",
         lr: float = 1e-3,
+        skip_threshold: float = 0.9,
+        window_size: int = 250,
         device: str = "cpu",
         seed: int = 42,
-        skip_threshold: float = 0.9,
-        window_size=250,
         **kwargs,
     ):
         super().__init__(
             module=module,
             loss_fn=loss_fn,
-            optimizer_fn=optimizer_fn,
+            optimizer=optimizer,
             lr=lr,
             device=device,
             seed=seed,
             **kwargs,
         )
-        self.window_size = window_size
         self.skip_threshold = skip_threshold
+        self.window_size = window_size
         self.rolling_mean = utils.Rolling(stats.Mean(), window_size=window_size)
         self.rolling_var = utils.Rolling(stats.Var(), window_size=window_size)
 
@@ -121,66 +108,88 @@ class ProbabilityWeightedAutoencoder(ae.Autoencoder):
         self, x: dict, y: Any = None, **kwargs
     ) -> "ProbabilityWeightedAutoencoder":
         """
-        Performs one step of training with a single example,
-        scaling the employed learning rate based on the outlier
-        probability estimate of the input example.
+        Trains the model with a single example, adjusting the learning rate based on the outlier probability.
 
         Parameters
         ----------
-        **kwargs
-        x
+        x : dict
             Input example.
 
         Returns
         -------
         ProbabilityWeightedAutoencoder
-            The autoencoder itself.
+            The updated model.
         """
-        if not self.module_initialized:
-            self._update_observed_features(x)
-            self.initialize_module(x=x, **self.kwargs)
+        self._update_observed_features(x)
 
         self._adapt_input_dim(x)
         x_t = dict2tensor(x, self.observed_features, device=self.device)
 
         self.module.train()
         x_pred = self.module(x_t)
-        loss = self.loss_func(x_pred, x_t)
-        self._apply_loss(loss)
+        loss = self.loss_fn(x_pred, x_t)
+        self._apply_adjusted_loss(loss)
         return self
 
-    def _apply_loss(self, loss):
-        losses_numpy = loss.detach().numpy()
-        mean = self.rolling_mean.get()
-        var = self.rolling_var.get() if self.rolling_var.get() > 0 else 1
-        if losses_numpy.ndim == 0:
-            self.rolling_mean.update(losses_numpy)
-            self.rolling_var.update(losses_numpy)
-        else:
-            for loss_numpy in range(len(losses_numpy)):
-                self.rolling_mean.update(loss_numpy)
-                self.rolling_var.update(loss_numpy)
-
-        loss_scaled = (losses_numpy - mean) / math.sqrt(var)
-        prob = ndtr(loss_scaled)
-        loss = torch.tensor((self.skip_threshold - prob) / self.skip_threshold) * loss
-
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
     def learn_many(self, X: pd.DataFrame) -> "ProbabilityWeightedAutoencoder":
-        if not self.module_initialized:
-            self._update_observed_features(X)
-            self.initialize_module(x=X, **self.kwargs)
+        """
+        Trains the model with a batch of examples, adjusting the learning rate based on outlier probabilities.
+
+        Parameters
+        ----------
+        X : pd.DataFrame
+            Batch of input examples.
+
+        Returns
+        -------
+        ProbabilityWeightedAutoencoder
+            The updated model.
+        """
+        self._update_observed_features(X)
+
         self._adapt_input_dim(X)
         X_t = df2tensor(X, features=self.observed_features, device=self.device)
 
         self.module.train()
-        x_pred = self.module(X)
+        x_pred = self.module(X_t)
         loss = torch.mean(
-            self.loss_func(x_pred, X_t, reduction="none"),
+            self.loss_fn(x_pred, X_t, reduction="none"),
             dim=list(range(1, X_t.dim())),
         )
-        self._apply_loss(loss)
+        self._apply_adjusted_loss(loss)
         return self
+
+    def _apply_adjusted_loss(self, loss: torch.Tensor):
+        """
+        Scales the loss based on the outlier probability and applies backpropagation.
+
+        Parameters
+        ----------
+        loss : torch.Tensor
+            Computed loss for the input data.
+        """
+        loss_np = loss.detach().cpu().numpy()
+
+        # Update rolling mean and variance
+        if loss_np.ndim == 0:  # Single loss value
+            self.rolling_mean.update(loss_np)
+            self.rolling_var.update(loss_np)
+        else:  # Batch of loss values
+            for loss_val in loss_np:
+                self.rolling_mean.update(loss_val)
+                self.rolling_var.update(loss_val)
+
+        # Normalize loss and compute outlier probability
+        mean = self.rolling_mean.get()
+        var = self.rolling_var.get() or 1  # Avoid division by zero
+        loss_scaled = (loss_np - mean) / math.sqrt(var)
+        prob = ndtr(loss_scaled)  # Outlier probability based on normalized loss
+
+        # Adjust loss based on probability
+        adjustment = (self.skip_threshold - prob) / self.skip_threshold
+        adjusted_loss = torch.tensor(adjustment, device=self.device) * loss
+
+        # Backpropagation
+        self.optimizer.zero_grad()
+        adjusted_loss.backward()
+        self.optimizer.step()

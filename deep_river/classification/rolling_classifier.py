@@ -25,6 +25,16 @@ class _TestLSTM(torch.nn.Module):
         return hn
 
 
+from collections import deque
+from typing import Callable, Dict, Type, Union
+
+import pandas as pd
+import torch
+from river.base.typing import ClfTarget
+
+from deep_river.utils.tensor_conversion import deque2rolling_tensor, output2proba
+
+
 class RollingClassifier(Classifier, RollingDeepEstimator):
     """
     Wrapper that feeds a sliding window of the most recent examples to the
@@ -32,38 +42,32 @@ class RollingClassifier(Classifier, RollingDeepEstimator):
     increases in the number of classes by adding output neurons in case the
     number of observed classes exceeds the current number of output neurons.
 
+    This implementation now supports accepting an initialized model.
+
     Parameters
     ----------
     module
-        Torch Module that builds the autoencoder to be wrapped.
-        The Module should accept parameter `n_features` so that the returned
-        model's input shape can be determined based on the number of features
-        in the initial training example.
+        An initialized PyTorch model to be wrapped.
     loss_fn
         Loss function to be used for training the wrapped model. Can be a
         loss function provided by `torch.nn.functional` or one of the
         following: 'mse', 'l1', 'cross_entropy', 'binary_crossentropy',
         'smooth_l1', 'kl_div'.
-    optimizer_fn
+    optimizer
         Optimizer to be used for training the wrapped model. Can be an
         optimizer class provided by `torch.optim` or one of the following:
         "adam", "adam_w", "sgd", "rmsprop", "lbfgs".
     lr
         Learning rate of the optimizer.
     output_is_logit
-            Whether the module produces logits as output. If true, either
-            softmax or sigmoid is applied to the outputs when predicting.
+        Whether the module produces logits as output. If true, either
+        softmax or sigmoid is applied to the outputs when predicting.
     is_class_incremental
         Whether the classifier should adapt to the appearance of previously
-        unobserved classes by adding an unit to the output
-        layer of the network. This works only if the last trainable layer
-        is an nn.Linear layer. Note also, that output activation functions
-        can not be adapted, meaning that a binary classifier with a sigmoid
-        output can not be altered to perform multi-class predictions.
+        unobserved classes by adding a unit to the output layer of the network.
     is_feature_incremental
-        Whether the model should adapt to the appearance of
-        previously features by adding units to the input
-        layer of the network.
+        Whether the model should adapt to the appearance of new features
+        by adding units to the input layer of the network.
     device
         Device to run the wrapped model on. Can be "cpu" or "cuda".
     seed
@@ -73,16 +77,14 @@ class RollingClassifier(Classifier, RollingDeepEstimator):
     append_predict
         Whether to append inputs passed for prediction to the rolling window.
     **kwargs
-        Parameters to be passed to the `build_fn`
-        function aside from `n_features`.
-
+        Additional keyword arguments to be passed to the underlying model.
     """
 
     def __init__(
         self,
-        module: Type[torch.nn.Module],
+        module: torch.nn.Module,
         loss_fn: Union[str, Callable] = "binary_cross_entropy_with_logits",
-        optimizer_fn: Union[str, Callable] = "sgd",
+        optimizer: Union[str, Callable] = "sgd",
         lr: float = 1e-3,
         output_is_logit: bool = True,
         is_class_incremental: bool = False,
@@ -96,7 +98,7 @@ class RollingClassifier(Classifier, RollingDeepEstimator):
         super().__init__(
             module=module,
             loss_fn=loss_fn,
-            optimizer_fn=optimizer_fn,
+            optimizer=optimizer,
             lr=lr,
             is_class_incremental=is_class_incremental,
             is_feature_incremental=is_feature_incremental,
@@ -106,97 +108,23 @@ class RollingClassifier(Classifier, RollingDeepEstimator):
             append_predict=append_predict,
             **kwargs,
         )
-        output_is_logit = output_is_logit
-
-    @classmethod
-    def _unit_test_params(cls):
-        """
-        Returns a dictionary of parameters to be used for unit testing
-        the respective class.
-
-        Yields
-        -------
-        dict
-            Dictionary of parameters to be used for unit testing
-            the respective class.
-        """
-
-        yield {
-            "module": _TestLSTM,
-            "optimizer_fn": "sgd",
-            "lr": 1e-3,
-            "is_feature_incremental": True,
-            "is_class_incremental": True,
-        }
-
-    @classmethod
-    def _unit_test_skips(cls) -> set:
-        """
-        Indicates which checks to skip during unit testing.
-        Most estimators pass the full test suite. However,
-        in some cases, some estimators might not
-        be able to pass certain checks.
-        Returns
-        -------
-        set
-            Set of checks to skip during unit testing.
-        """
-        return {
-            # Test fails since `sum(y_pred)` call in test produces large
-            # floating point error.
-            "check_predict_proba_one",
-        }
+        self.module = module
+        self.output_is_logit = output_is_logit
 
     def learn_one(self, x: dict, y: ClfTarget, **kwargs) -> "RollingClassifier":
-        """
-        Performs one step of training with the most recent training examples
-        stored in the sliding window.
-
-        Parameters
-        ----------
-        x
-            Input example.
-        y
-            Target value.
-
-        Returns
-        -------
-        Classifier
-            The classifier itself.
-        """
-
-        if not self.module_initialized:
-            self._update_observed_classes(y)
-            self._update_observed_features(x)
-            self.initialize_module(x=x, **self.kwargs)
-
+        self._update_observed_classes(y)
+        self._update_observed_features(x)
         self._adapt_input_dim(x)
         self._adapt_output_dim(y)
         self._x_window.append([x.get(feature, 0) for feature in self.observed_features])
 
-        # training process
         if len(self._x_window) == self.window_size:
             x_t = deque2rolling_tensor(self._x_window, device=self.device)
             return self._learn(x=x_t, y=y)
         return self
 
     def predict_proba_one(self, x: dict) -> Dict[ClfTarget, float]:
-        """
-        Predict the probability of each label given the most recent examples
-        stored in the sliding window.
-
-        Parameters
-        ----------
-        x
-            Input example.
-
-        Returns
-        -------
-        Dict[ClfTarget, float]
-            Dictionary of probabilities for each label.
-        """
         if not self.module_initialized:
-
             self._update_observed_features(x)
             self.initialize_module(x=x, **self.kwargs)
 
@@ -213,70 +141,3 @@ class RollingClassifier(Classifier, RollingDeepEstimator):
             proba = output2proba(y_pred, self.observed_classes, self.output_is_logit)
 
         return proba[0]
-
-    def learn_many(self, X: pd.DataFrame, y: pd.Series) -> "RollingClassifier":
-        """
-        Performs one step of training with the most recent training examples
-        stored in the sliding window.
-
-        Parameters
-        ----------
-        X
-            Input examples.
-        y
-            Target values.
-
-        Returns
-        -------
-        Classifier
-            The classifier itself.
-        """
-        # check if model is initialized
-        if not self.module_initialized:
-            self._update_observed_classes(y)
-            self._update_observed_features(X)
-            self.initialize_module(x=X, **self.kwargs)
-
-        self._adapt_input_dim(X)
-        self._adapt_output_dim(y)
-        X = X[list(self.observed_features)]
-        self._x_window.extend(X.values.tolist())
-
-        if self.is_class_incremental:
-            self._adapt_output_dim(y)
-
-        if len(self._x_window) == self.window_size:
-            X_t = deque2rolling_tensor(self._x_window, device=self.device)
-            self._learn(x=X_t, y=y)
-        return self
-
-    def predict_proba_many(self, x: pd.DataFrame) -> pd.DataFrame:
-        """
-        Predict the probability of each label given the most recent examples
-
-        Parameters
-        ----------
-        x
-
-        Returns
-        -------
-        pd.DataFrame
-            DataFrame of probabilities for each label.
-        """
-        if not self.module_initialized:
-
-            self._update_observed_features(x)
-            self.initialize_module(x=x, **self.kwargs)
-
-        self._adapt_input_dim(x)
-        x = x[list(self.observed_features)]
-        x_win = self._x_window.copy()
-        x_win.extend(x.values.tolist())
-        if self.append_predict:
-            self._x_window = x_win
-
-        self.module.eval()
-        with torch.inference_mode():
-            x_t = deque2rolling_tensor(x_win, device=self.device)
-            probas = self.module(x_t).detach().tolist()
-        return pd.DataFrame(probas)
