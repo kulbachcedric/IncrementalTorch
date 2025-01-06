@@ -1,0 +1,35 @@
+<!-- Custom HTML site displayed as the landing page -->
+{% extends "base.html" %}
+
+{% block tabs %}
+
+   <link href="https://fonts.cdnfonts.com/css/gilroy-bold" rel="stylesheet">
+    <!-- Hero for landing page -->
+    <section class="tx-container">
+        <div class="md-grid md-typeset">
+          <div class="tx-hero">
+
+            <div class="tx-hero__content">
+                <h1 class=".focus-in-contract-bck"> deep-river </h1>
+                <h3> A Python package for online deep learning that wraps PyTorch for river.</h3>
+              <a href="{{ page.next_page.url | url }}" title="{{ page.next_page.title | striptags }}" class="md-button md-button--primary">
+                Get started
+              </a>
+              <a href="{{ config.repo_url }}" title="{{ lang.t('source.link.title') }}" class="md-button">
+                GitHub
+              </a>
+            </div>
+
+          </div>
+        </div>
+    </section>
+
+{% endblock %}
+
+<!-- Content -->
+{% block content %}
+{% endblock %}
+
+<!-- Application footer -->
+{% block footer %}
+{% endblock %}
