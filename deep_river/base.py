@@ -7,6 +7,7 @@ import pandas as pd
 import torch
 from ordered_set import OrderedSet
 from river import base
+from river.time_series.base import Forecaster
 from torch.utils.hooks import RemovableHandle
 
 from deep_river.utils import get_loss_fn, get_optim_fn
@@ -310,3 +311,112 @@ class RollingDeepEstimator(DeepEstimator):
         self.append_predict = append_predict
         self._x_window: Deque = collections.deque(maxlen=window_size)
         self._batch_i = 0
+
+from river import base
+import torch
+from typing import Union, Callable, Type, List, Dict
+import pandas as pd
+from collections import OrderedDict
+
+class DeepForecaster(RollingDeepEstimator, Forecaster):
+    """
+    A deep learning-based forecaster using a rolling window for sequential data.
+    Combines the functionality of River's Forecaster and the RollingDeepEstimator.
+    """
+
+    def __init__(
+        self,
+        module: Type[torch.nn.Module],
+        loss_fn: Union[str, Callable] = "mse",
+        optimizer_fn: Union[str, Callable] = "sgd",
+        lr: float = 1e-3,
+        device: str = "cpu",
+        seed: int = 42,
+        window_size: int = 10,
+        append_predict: bool = False,
+        **kwargs,
+    ):
+        super().__init__(
+            module=module,
+            loss_fn=loss_fn,
+            optimizer_fn=optimizer_fn,
+            lr=lr,
+            device=device,
+            seed=seed,
+            window_size=window_size,
+            append_predict=append_predict,
+            **kwargs,
+        )
+
+    def learn_one(self, y: float, x: dict | None = None) -> None:
+        """
+        Updates the model using one supervised learning step.
+
+        Parameters
+        ----------
+        y : float
+            The target value.
+        x : dict | None
+            Additional features.
+        """
+        if not self.module_initialized:
+            self._update_observed_features(x)
+            self.initialize_module(x=x, **self.kwargs)
+        # Update rolling window
+        x = x or {}
+        self._x_window.append(list(x.values()))
+
+
+        # Prepare input and target tensors
+        x_tensor = torch.tensor(
+            list(self._x_window), dtype=torch.float32, device=self.device
+        )
+        y_tensor = torch.tensor([y], dtype=torch.float32, device=self.device)
+
+        # Forward pass
+        self.module.train()
+        y_pred = self.module(x_tensor).squeeze()
+
+        # Compute loss and backpropagation
+        loss = self.loss_func(y_pred, y_tensor)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+    def forecast(self, horizon: int, xs: list[dict] | None = None) -> list:
+        """
+        Generates forecasts for the specified horizon.
+
+        Parameters
+        ----------
+        horizon : int
+            Number of steps ahead to forecast.
+        xs : list[dict] | None
+            Optional features for each step in the horizon.
+
+        Returns
+        -------
+        list
+            Forecasted values.
+        """
+        if not self.module_initialized:
+            raise ValueError("you need to call the learn_one function at least once before calling forecast.")
+        self.module.eval()
+        forecasts = []
+        rolling_window = collections.deque(self._x_window, maxlen=self.window_size)
+
+        for t in range(horizon):
+            x = xs[t] if xs else {}
+            x_tensor = torch.tensor(
+                list(rolling_window), dtype=torch.float32, device=self.device
+            )
+
+            with torch.no_grad():
+                y_pred = self.module(x_tensor).squeeze().item()
+                forecasts.append(y_pred)
+
+            if self.append_predict:
+                # Update the rolling window with the new prediction
+                rolling_window.append(list(x.values()) if x else [y_pred])
+
+        return forecasts

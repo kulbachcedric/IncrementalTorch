@@ -1,54 +1,60 @@
+import math
+import calendar
+
+from river import datasets, metrics, compose
 import torch
 import torch.nn as nn
-from river import datasets, compose
-from river.linear_model import LogisticRegression
-from river.metrics import Accuracy
-from river.preprocessing import StandardScaler
+import datetime as dt
 
-from deep_river.preprocessing import EmbeddingTransformer
+from deep_river.base import DeepForecaster
 
 
-# Define the model
-class WordEmbeddingModel(nn.Module):
-    def __init__(self, vocab_size=10000, embedding_dim=50):
-        super(WordEmbeddingModel, self).__init__()
-        self.embedding = nn.Embedding(vocab_size, embedding_dim)
-        self.fc = nn.Linear(embedding_dim, 1)  # Example output for binary classification
+# Define a simple PyTorch module for forecasting
+class SimpleForecasterModule(nn.Module):
+    def __init__(self, n_features):
+        super().__init__()
+        self.hidden = nn.Linear(n_features, 10)
+        self.output = nn.Linear(10, 1)
 
     def forward(self, x):
-        embedded = self.embedding(x)
-        return embedded.mean(dim=1)  # Mean pooling
+        x = torch.relu(self.hidden(x))
+        return self.output(x)
 
-# Initialize the embedding transformer
-embedding_model = WordEmbeddingModel
-transformer = EmbeddingTransformer(
-    module=embedding_model,
-    loss_fn="mse_loss",
+def get_month_distances(x):
+    return {
+        calendar.month_name[month]: math.exp(-(x['month'].month - month) ** 2)
+        for month in range(1, 13)
+    }
+
+def get_ordinal_date(x):
+    return {'ordinal_date': x['month'].toordinal()}
+
+extract_features = compose.TransformerUnion(
+    get_ordinal_date,
+    get_month_distances
+)
+
+model = (
+    extract_features |
+    DeepForecaster(
+    module=SimpleForecasterModule,
+    loss_fn="mse",
     optimizer_fn="adam",
-    tokenizer="basic_english",
-    lr=0.01
-)
+    lr=0.01,
+    device="cpu",
+    ))
 
-# Combine the transformer with a logistic regression classifier
-model = compose.Pipeline(
-    ("embedding", transformer),
-    ("scale", StandardScaler()),  # Scale the embedding vectors
-    ("learn", LogisticRegression())
-)
 
-# Load the SMS spam dataset
-dataset = datasets.SMSSpam()
+horizon = 12
+future = [
+    {'month': dt.date(year=1961, month=m, day=1)}
+    for m in range(1, horizon + 1)
+]
 
-# Define a metric
-metric = Accuracy()
-
-# Train the model
-for i, (x, y) in enumerate(dataset):
-    y_pred = model.predict_one(x)
+for x, y in datasets.AirlinePassengers():
     model.learn_one(x, y)
-    metric.update(y, y_pred)
 
-# Example usage
-test_instance = {"message": "Win a $1000 gift card now!"}
-prediction = model.predict_one(test_instance)
-print(f"Prediction for '{test_instance['message']}': {prediction}")
+forecast = model.forecast(horizon=horizon)
+for x, y_pred in zip(future, forecast):
+    print(x['month'], f'{y_pred:.3f}')
+

@@ -1,4 +1,4 @@
-from typing import Callable, Type, Union
+from typing import Callable, List, Optional, Type, Union
 
 import pandas as pd
 import torch
@@ -220,47 +220,3 @@ class RollingRegressor(RollingDeepEstimator, Regressor):
             res = self.module(x_t).detach().tolist()
 
         return res
-    
-    def forecast(self, horizon: int, xs: dict) -> pd.Series:
-        """
-        Generates autoregressive forecasts for a specified horizon.
-
-        Parameters
-        ----------
-        horizon : int
-            The number of steps ahead to forecast.
-        xs : dict
-            The initial input example to seed the autoregressive forecasting.
-
-        Returns
-        -------
-        pd.Series
-            A series of forecasted values for the specified horizon.
-        """
-        if not self.module_initialized:
-            raise ValueError("the 'learn_one' methods need to be called at least once before forecasting.")
-
-        if xs is not None:
-            self._adapt_input_dim(xs)
-
-        # Start with the current sliding window and seed input
-        x_win = self._x_window.copy()
-        x_win.append([xs.get(feature, 0) for feature in self.observed_features])
-
-        forecasts = []
-        self.module.eval()
-
-        with torch.inference_mode():
-            for _ in range(horizon):
-                x_t = deque2rolling_tensor(x_win, device=self.device)
-                prediction = self.module(x_t).numpy(force=True).item()
-                forecasts.append(prediction)
-
-                # Update the rolling window with the forecasted value
-                next_input = dict(xs)  # Modify xs if needed
-                next_input[self.target_feature] = prediction
-                x_win.append([next_input.get(feature, 0) for feature in self.observed_features])
-                if len(x_win) > self.window_size:
-                    x_win.pop(0)
-
-        return pd.Series(forecasts)
