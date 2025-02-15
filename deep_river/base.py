@@ -312,11 +312,14 @@ class RollingDeepEstimator(DeepEstimator):
         self._x_window: Deque = collections.deque(maxlen=window_size)
         self._batch_i = 0
 
-from river import base
-import torch
-from typing import Union, Callable, Type, List, Dict
-import pandas as pd
+
 from collections import OrderedDict
+from typing import Callable, Dict, List, Type, Union
+
+import pandas as pd
+import torch
+from river import base
+
 
 class DeepForecaster(RollingDeepEstimator, Forecaster):
     """
@@ -366,7 +369,6 @@ class DeepForecaster(RollingDeepEstimator, Forecaster):
         x = x or {}
         self._x_window.append(list(x.values()))
 
-
         # Prepare input and target tensors
         x_tensor = torch.tensor(
             list(self._x_window), dtype=torch.float32, device=self.device
@@ -400,7 +402,9 @@ class DeepForecaster(RollingDeepEstimator, Forecaster):
             Forecasted values.
         """
         if not self.module_initialized:
-            raise ValueError("you need to call the learn_one function at least once before calling forecast.")
+            raise ValueError(
+                "you need to call the learn_one function at least once before calling forecast."
+            )
         self.module.eval()
         forecasts = []
         rolling_window = collections.deque(self._x_window, maxlen=self.window_size)
